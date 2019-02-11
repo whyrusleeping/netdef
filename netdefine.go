@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitalocean/go-openvswitch/ovs"
 	"github.com/pkg/errors"
 	"github.com/whyrusleeping/go-ctrlnet"
 )
@@ -166,7 +167,7 @@ func (r *RenderedNetwork) DeleteNamespace(name string) error {
 
 // CreateBridge creates a new bridge with openvswitch.
 func (r *RenderedNetwork) CreateBridge(name string) error {
-	err := callBin("ovs-vsctl", "add-br", name)
+	err := r.ovsClient.VSwitch.AddBridge(name)
 	if err == nil {
 		r.Bridges[name] = struct{}{}
 	}
@@ -175,7 +176,7 @@ func (r *RenderedNetwork) CreateBridge(name string) error {
 
 // DeleteBridge deletes a bridge with openvswitch.
 func (r *RenderedNetwork) DeleteBridge(name string) error {
-	err := callBin("ovs-vsctl", "del-br", name)
+	err := r.ovsClient.VSwitch.DeleteBridge(name)
 	if err == nil {
 		delete(r.Bridges, name)
 	}
@@ -184,19 +185,13 @@ func (r *RenderedNetwork) DeleteBridge(name string) error {
 
 // BridgeAddPort adds a port to an openvswitch bridge.
 func (r *RenderedNetwork) BridgeAddPort(bridge, ifname string) error {
-	return callBin("ovs-vsctl", "add-port", bridge, ifname)
+	return r.ovsClient.VSwitch.AddPort(bridge, ifname)
 }
 
-// PortSetParameter sets a variable for a given port.
-func (r *RenderedNetwork) PortSetParameter(port, param, val string) error {
-	typeStr := fmt.Sprintf("%s=%s", param, val)
-	return callBin("ovs-vsctl", "set", "interface", port, typeStr)
-}
-
-// PortSetOption sets an option for a given port.
-func (r *RenderedNetwork) PortSetOption(port, option, peer string) error {
-	param := fmt.Sprintf("options:%s", option)
-	return r.PortSetParameter(port, param, peer)
+// PortSetOptions sets options for a port/interface
+func (r *RenderedNetwork) PortSetOptions(port string,
+	opts ovs.InterfaceOptions) error {
+	return r.ovsClient.VSwitch.Set.Interface(port, opts)
 }
 
 // PatchBridges creates patch ports on two interfaces and peers them,
@@ -219,21 +214,17 @@ func (r *RenderedNetwork) PatchBridges(a, b string, l *LinkOpts) error {
 	if err = r.BridgeAddPort(a, ab); err != nil {
 		return errors.Wrap(err, "adding port")
 	}
-	if err = r.PortSetParameter(ab, "type", "patch"); err != nil {
-		return errors.Wrap(err, "configuring port type")
-	}
-	if err = r.PortSetOption(ab, "peer", ba); err != nil {
-		return errors.Wrap(err, "configuring port options")
-	}
+	r.PortSetOptions(ab, ovs.InterfaceOptions{
+		Peer: ba,
+		Type: ovs.InterfaceTypePatch,
+	})
 	if err = r.BridgeAddPort(b, ba); err != nil {
 		return errors.Wrap(err, "adding port")
 	}
-	if err = r.PortSetParameter(ba, "type", "patch"); err != nil {
-		return errors.Wrap(err, "configuring port type")
-	}
-	if err = r.PortSetOption(ba, "peer", ab); err != nil {
-		return errors.Wrap(err, "configuring port options")
-	}
+	r.PortSetOptions(ba, ovs.InterfaceOptions{
+		Peer: ab,
+		Type: ovs.InterfaceTypePatch,
+	})
 	if l != nil {
 		if err = l.Apply(ab); err != nil {
 			return errors.Wrap(err, "setting patch link options")
@@ -342,6 +333,8 @@ type RenderedNetwork struct {
 
 	subnets  map[string]string
 	prefixes map[string]string
+
+	ovsClient *ovs.Client
 }
 
 // NewRenderedNetwork initializes a RenderedNetwork based on the prefixes
@@ -359,6 +352,7 @@ func (c *Config) NewRenderedNetwork() *RenderedNetwork {
 			"Port":      "tap",
 			"Namespace": "ns",
 		},
+		ovsClient: ovs.New(),
 	}
 
 	if c.Prefixes != nil {

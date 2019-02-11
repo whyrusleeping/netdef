@@ -85,7 +85,8 @@ func main() {
 			}
 			defer fi.Close()
 
-			var r netdef.RenderedNetwork
+			cfg := netdef.Config{}
+			r := cfg.NewRenderedNetwork()
 			if err := json.NewDecoder(fi).Decode(&r); err != nil {
 				return err
 			}
